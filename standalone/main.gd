@@ -1,5 +1,6 @@
 extends Node3D
 # Original standalone trial game. All models are generated locally; no online assets.
+const RevolverUI = preload("res://revolver_ui.gd")
 const PINK = Color("ff458f")
 const GOLD = Color("ffd17b")
 const INK = Color("111321")
@@ -23,6 +24,15 @@ var hud: Label
 var feedback: Label
 var evidence_info: Label
 var evidence_buttons: Array[Button] = []
+var revolver: Control
+var loaded_name: Label
+var weak_label: Label
+var timer_label: Label
+var focus_label: Label
+var evidence_sheet: Control
+var debate_remaining = 120.0
+var focus_remaining = 6.0
+var focusing = false
 var statement: Button
 var speaker_name: Label
 var portrait_camera: Camera3D
@@ -215,6 +225,10 @@ func clear_screen():
         child.queue_free()
     evidence_buttons.clear()
     statement = null
+    weak_label = null
+    evidence_sheet = null
+    revolver = null
+    focusing = false
     aim = null
     if statement_tween and statement_tween.is_valid():
         statement_tween.kill()
@@ -273,7 +287,7 @@ func show_menu():
     text(screen, "Seven witnesses. Three contradictions. One stolen archive seal.\nRead the evidence, break the lies, and name the culprit.", Vector2(54, 440), Vector2(525, 95), 21)
     button(screen, "BEGIN TRIAL  →", Vector2(54, 565), Vector2(340, 60), start_game)
     button(screen, "QUIT", Vector2(413, 565), Vector2(155, 60), func(): get_tree().quit())
-    text(screen, "Standalone demo  •  Original procedural characters  •  v0.1", Vector2(54, 670), Vector2(750, 30), 15, Color("a39eb3"))
+    text(screen, "Standalone demo  •  Original procedural characters  •  v0.2", Vector2(54, 670), Vector2(750, 30), 15, Color("a39eb3"))
 
 func start_game():
     confidence = 5
@@ -281,6 +295,8 @@ func start_game():
     shots = 0
     hits = 0
     round_number = 0
+    debate_remaining = 120.0
+    focus_remaining = 6.0
     selected = 0
     dialogue_index = 0
     show_dialogue()
@@ -342,6 +358,10 @@ func show_dialogue():
     button(screen, "NEXT  →", Vector2(1120, 642), Vector2(112, 38), next_dialogue)
 
 func next_dialogue():
+    if phase == "reasoning":
+        if round_number >= 3: show_verdict()
+        else: debate_intro()
+        return
     if phase != "dialogue": return
     dialogue_index += 1
     if dialogue_index >= 3: debate_intro()
@@ -353,9 +373,11 @@ func debate_intro():
     rect(screen, Vector2.ZERO, Vector2(1280, 720), Color(0.03, 0.03, 0.06, 0.78))
     text(screen, "TRUTH AGAINST TESTIMONY", Vector2(298, 236), Vector2(800, 50), 24, GOLD)
     var headline = text(screen, "NONSTOP DEBATE", Vector2(-1100, 298), Vector2(1200, 120), 76, PINK)
-    text(screen, "Choose evidence with 1 / 2 / 3. Aim at gold text and click to fire.\nStatements advance automatically. Five mistakes end the trial.", Vector2(248, 460), Vector2(850, 90), 22)
+    text(screen, "Load evidence with Q / E or the mouse wheel. Shoot the gold phrase.\nHold Shift to focus. Tab opens your evidence. Testimony loops until you break it.", Vector2(248, 460), Vector2(850, 90), 22)
     var tween = create_tween()
     tween.tween_property(headline, "position:x", 225.0, 0.45).set_trans(Tween.TRANS_QUINT).set_ease(Tween.EASE_OUT)
+    debate_remaining = 120.0
+    focus_remaining = 6.0
     var token = sequence
     await get_tree().create_timer(3.0).timeout
     if token == sequence: show_debate()
@@ -372,12 +394,24 @@ func show_debate():
     hud = text(screen, "", Vector2(850, 24), Vector2(410, 70), 20, GOLD)
     speaker_name = text(screen, "", Vector2(40, 108), Vector2(900, 50), 25)
     feedback = text(screen, "", Vector2(350, 435), Vector2(850, 60), 32, PINK)
-    rect(screen, Vector2(24, 548), Vector2(1232, 150), Color(0.045, 0.05, 0.09, 0.94))
-    text(screen, "TRUTH BULLETS  /  SELECT EVIDENCE", Vector2(42, 559), Vector2(850, 30), 16, GOLD)
-    for i in range(3):
-        var index = i
-        evidence_buttons.append(button(screen, str(i + 1) + "  " + CLUES[i][0], Vector2(42 + i * 402, 594), Vector2(388, 42), func(): select_evidence(index)))
-    evidence_info = text(screen, "", Vector2(42, 645), Vector2(1190, 50), 17, Color("c9c4d5"))
+    revolver = RevolverUI.new()
+    revolver.position = Vector2(-22, 425)
+    revolver.size = Vector2(300, 295)
+    revolver.evidence_selected.connect(select_evidence)
+    screen.add_child(revolver)
+    text(screen, "LOADED TRUTH BULLET", Vector2(260, 559), Vector2(650, 30), 16, PINK)
+    # The bullet casing is an evidence HUD, not the dialogue panel.
+    rect(screen, Vector2(260, 597), Vector2(420, 44), Color("40322b"))
+    rect(screen, Vector2(260, 597), Vector2(7, 44), GOLD)
+    var tip = Polygon2D.new()
+    tip.polygon = PackedVector2Array([Vector2(680, 597), Vector2(706, 619), Vector2(680, 641)])
+    tip.color = GOLD
+    screen.add_child(tip)
+    loaded_name = text(screen, "", Vector2(279, 600), Vector2(420, 40), 25, GOLD)
+    evidence_info = text(screen, "", Vector2(260, 649), Vector2(790, 65), 17, Color("e0d8dc"))
+    text(screen, "Q / E or WHEEL  •  load    SHIFT  •  focus    TAB  •  evidence", Vector2(260, 520), Vector2(940, 35), 16, Color("bbb3cb"))
+    timer_label = text(screen, "", Vector2(1080, 108), Vector2(185, 45), 28, PINK)
+    focus_label = text(screen, "", Vector2(1000, 160), Vector2(250, 35), 18, GOLD)
     aim = text(screen, "+", Vector2.ZERO, Vector2(35, 35), 32, GOLD)
     aim.z_index = 8
     select_evidence(selected)
@@ -388,6 +422,8 @@ func show_debate():
 func select_evidence(index: int):
     selected = index
     if phase != "debate": return
+    if is_instance_valid(revolver): revolver.load_bullet(index)
+    loaded_name.text = CLUES[index][0]
     evidence_info.text = clue_description(index)
     for i in range(evidence_buttons.size()):
         evidence_buttons[i].modulate = GOLD if i == selected else Color.WHITE
@@ -408,7 +444,22 @@ func spawn_statement():
     var saying: String = lies[round_number] if target_is_weak else neutral[round_number]
     var who = culprit if target_is_weak else (culprit + 2) % 7
     speaker_name.text = NAMES[who] + "  /  " + JOBS[who]
-    statement = button(screen, saying, Vector2(250, 270), Vector2(820, 85), func(): pass)
+    statement = button(screen, "" if target_is_weak else saying, Vector2(300, 240), Vector2(820, 95), func(): pass)
+    weak_label = null
+    if target_is_weak:
+        var prefixes = ["I ", "I never touched ", "A "]
+        var weak_phrases = ["NEVER ENTERED THE ARCHIVE", "THAT CABINET", "POWER CUT"]
+        var suffixes = [".", ". Not once.", " stopped the clock."]
+        var font = ThemeDB.fallback_font
+        var prefix_width = font.get_string_size(prefixes[round_number], HORIZONTAL_ALIGNMENT_LEFT, -1, 30).x
+        var weak_width = font.get_string_size(weak_phrases[round_number], HORIZONTAL_ALIGNMENT_LEFT, -1, 30).x
+        var suffix_width = font.get_string_size(suffixes[round_number], HORIZONTAL_ALIGNMENT_LEFT, -1, 30).x
+        var left = max(0, (820 - prefix_width - weak_width - suffix_width) / 2)
+        text(statement, prefixes[round_number], Vector2(left, 20), Vector2(prefix_width + 4, 50), 30)
+        weak_label = text(statement, weak_phrases[round_number], Vector2(left + prefix_width, 20), Vector2(weak_width + 5, 50), 30, GOLD)
+        weak_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+        rect(weak_label, Vector2(0, 43), Vector2(weak_width, 2), GOLD)
+        text(statement, suffixes[round_number], Vector2(left + prefix_width + weak_width, 20), Vector2(suffix_width + 6, 50), 30)
     statement.add_theme_font_size_override("font_size", 30)
     statement.add_theme_color_override("font_color", GOLD if target_is_weak else PALE)
     statement.add_theme_stylebox_override("normal", StyleBoxEmpty.new())
@@ -416,7 +467,7 @@ func spawn_statement():
     statement.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
     statement.mouse_filter = Control.MOUSE_FILTER_IGNORE
     statement_tween = create_tween()
-    statement_tween.tween_property(statement, "position", Vector2(70, 315), 5.0)
+    statement_tween.tween_property(statement, "position", Vector2(160, 295), 5.0)
     statement_time = 0
     statement_index += 1
 
@@ -425,14 +476,16 @@ func fire(point: Vector2):
     cooldown = 0.28
     shots += 1
     if not muted: shot_sound.play()
-    var start = Vector2(640, 530)
+    if is_instance_valid(revolver): revolver.kick()
+    var start = Vector2(128, 466)
     var delta = point - start
     var tracer = rect(overlay, start, Vector2(delta.length(), 4), GOLD)
     tracer.rotation = delta.angle()
     var tween = create_tween()
     tween.tween_property(tracer, "modulate:a", 0.0, 0.2)
     tween.tween_callback(tracer.queue_free)
-    var hit = is_instance_valid(statement) and statement.get_global_rect().grow(10).has_point(point)
+    var hit_statement = is_instance_valid(statement) and statement.get_global_rect().has_point(point)
+    var hit = is_instance_valid(weak_label) and weak_label.get_global_rect().grow(7).has_point(point)
     if hit and target_is_weak and selected == round_number:
         hits += 1
         score += 100
@@ -444,14 +497,49 @@ func fire(point: Vector2):
         var token = sequence
         await get_tree().create_timer(1.2).timeout
         if sequence != token: return
-        if round_number == 3: show_verdict()
-        else: show_debate()
+        show_reasoning()
     else:
-        confidence -= 1
-        feedback.text = "WRONG EVIDENCE" if hit and target_is_weak else ("THAT ISN'T A CONTRADICTION" if hit else "MISS — AIM AT THE WORDS")
+        # Missing the target doesn't cost influence; a false argument does.
+        if hit_statement: confidence -= 1
+        feedback.text = "WRONG EVIDENCE" if hit else ("AIM AT THE GOLD WEAK POINT" if hit_statement else "MISS")
         feedback_time = 1.6
         update_hud()
         if confidence <= 0: show_result(false, "Your argument fell apart. Read each truth bullet before firing.")
+
+func show_reasoning():
+    phase = "reasoning"
+    clear_screen()
+    closeup(culprit)
+    var explanations = [
+        "The access log records your personal key at 20:54. You did enter the archive. Now, what happened at the cabinet?",
+        "The gold thread matches your cuff. You touched the cabinet from the inside. But why was the clock stopped?",
+        "The power never failed. Someone removed the battery to invent a false time. Your key and the fiber identify who took the seal."
+    ]
+    rect(screen, Vector2(24, 522), Vector2(1232, 174), Color(0.045, 0.05, 0.09, 0.96))
+    rect(screen, Vector2(24, 522), Vector2(1232, 3), PINK)
+    add_portrait(culprit)
+    text(screen, "CONTRADICTION RESOLVED  /  " + str(round_number) + " OF 3", Vector2(285, 540), Vector2(900, 36), 23, GOLD)
+    text(screen, explanations[round_number - 1], Vector2(285, 585), Vector2(855, 78), 22)
+    button(screen, "NEXT →", Vector2(1120, 642), Vector2(112, 38), next_dialogue)
+
+func toggle_evidence():
+    if phase != "debate": return
+    if is_instance_valid(evidence_sheet):
+        screen.remove_child(evidence_sheet)
+        evidence_sheet.queue_free()
+        evidence_sheet = null
+        return
+    evidence_sheet = Control.new()
+    evidence_sheet.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+    evidence_sheet.mouse_filter = Control.MOUSE_FILTER_STOP
+    screen.add_child(evidence_sheet)
+    rect(evidence_sheet, Vector2.ZERO, Vector2(1280, 720), Color(0.03, 0.03, 0.06, 0.97))
+    text(evidence_sheet, "COURT RECORD", Vector2(90, 60), Vector2(1000, 90), 52, PINK)
+    for i in range(3):
+        var index = i
+        button(evidence_sheet, CLUES[i][0], Vector2(90, 180 + i * 135), Vector2(280, 64), func(): select_evidence(index); toggle_evidence())
+        text(evidence_sheet, clue_description(i), Vector2(405, 180 + i * 135), Vector2(760, 100), 23)
+    button(evidence_sheet, "RETURN TO DEBATE  /  TAB", Vector2(775, 620), Vector2(410, 55), toggle_evidence)
 
 func show_verdict():
     phase = "verdict"
@@ -492,14 +580,28 @@ func _process(dt: float):
         camera.position = Vector3(sin(orbit_time) * radius, 3.1 if phase == "debate" else 4.2, cos(orbit_time) * radius)
         camera.look_at(Vector3(-sin(orbit_time) * 6, 1.25, -cos(orbit_time) * 6))
     if phase == "debate":
-        statement_time += dt
+        var inspecting = is_instance_valid(evidence_sheet)
+        var wants_focus = Input.is_key_pressed(KEY_SHIFT) and focus_remaining > 0 and not inspecting
+        focusing = wants_focus
+        var speed = 0.28 if focusing else 1.0
+        if inspecting: speed = 0.0
+        if statement_tween and statement_tween.is_valid(): statement_tween.set_speed_scale(speed)
+        if not inspecting:
+            debate_remaining = max(0, debate_remaining - dt)
+            focus_remaining = max(0, focus_remaining - dt) if focusing else min(6, focus_remaining + dt * 0.4)
+        statement_time += dt * speed
         if statement_time >= 5.0: spawn_statement()
+        timer_label.text = "%02d:%02d" % [int(debate_remaining) / 60, int(debate_remaining) % 60]
+        focus_label.text = ("FOCUS  " if focusing else "FOCUS READY  ") + str(int(focus_remaining * 100 / 6)) + "%"
+        if debate_remaining <= 0:
+            show_result(false, "Time ran out. Review the court record and find the gold weak point.")
+            return
         if is_instance_valid(aim): aim.position = get_viewport().get_mouse_position() - Vector2(12, 12)
         if feedback_time <= 0 and is_instance_valid(feedback): feedback.text = ""
     for i in range(cast.size()):
         cast[i].rotation.z = sin(elapsed * 1.7 + i) * 0.012
 
-func _unhandled_input(event: InputEvent):
+func _input(event: InputEvent):
     if event is InputEventKey and event.pressed and not event.echo:
         if event.keycode == KEY_ESCAPE:
             show_menu()
@@ -509,15 +611,23 @@ func _unhandled_input(event: InputEvent):
         elif event.keycode == KEY_F11:
             var full = DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN
             DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED if full else DisplayServer.WINDOW_MODE_FULLSCREEN)
-        elif phase == "dialogue" and event.keycode in [KEY_SPACE, KEY_ENTER]:
+        elif phase in ["dialogue", "reasoning"] and event.keycode in [KEY_SPACE, KEY_ENTER]:
             next_dialogue()
         elif phase == "debate" and event.keycode in [KEY_1, KEY_2, KEY_3]:
             select_evidence(event.keycode - KEY_1)
-    if phase == "debate":
+        elif phase == "debate" and event.keycode in [KEY_Q, KEY_E]:
+            select_evidence(posmod(selected + (-1 if event.keycode == KEY_Q else 1), 3))
+        elif phase == "debate" and event.keycode == KEY_TAB:
+            toggle_evidence()
+            get_viewport().set_input_as_handled()
+func _unhandled_input(event: InputEvent):
+    if phase == "debate" and not is_instance_valid(evidence_sheet):
+        if event is InputEventMouseButton and event.pressed and event.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN]:
+            select_evidence(posmod(selected + (-1 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1), 3))
         if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-            if event.position.y < 540: fire(event.position)
+            if not Rect2(-22, 425, 300, 295).has_point(event.position): fire(event.position)
         elif event is InputEventScreenTouch and event.pressed:
-            if event.position.y < 540: fire(event.position)
+            if not Rect2(-22, 425, 300, 295).has_point(event.position): fire(event.position)
 
 func run_smoke_test():
     start_game()
@@ -526,32 +636,63 @@ func run_smoke_test():
     next_dialogue()
     await get_tree().create_timer(3.2).timeout
     assert(phase == "debate")
+    assert(is_instance_valid(revolver))
     assert(screen.find_children("*", "SubViewportContainer", false, false).is_empty())
+    select_evidence(2)
+    assert(revolver.selected == 2)
+    var key = InputEventKey.new()
+    key.pressed = true
+    key.keycode = KEY_E
+    get_viewport().push_input(key, true)
+    assert(selected == 0)
+    key = InputEventKey.new()
+    key.pressed = true
+    key.keycode = KEY_TAB
+    get_viewport().push_input(key, true)
+    assert(is_instance_valid(evidence_sheet))
+    var saved_time = debate_remaining
+    await get_tree().create_timer(0.2).timeout
+    assert(is_equal_approx(saved_time, debate_remaining))
+    toggle_evidence()
     for stage in range(3):
         select_evidence(stage)
         assert(round_number == stage)
         assert(target_is_weak)
-        fire(statement.get_global_rect().get_center())
+        # Exercise real viewport input dispatch, including GUI and unhandled input.
+        var click = InputEventMouseButton.new()
+        click.button_index = MOUSE_BUTTON_LEFT
+        click.pressed = true
+        click.position = weak_label.get_global_rect().get_center()
+        click.global_position = click.position
+        get_viewport().push_input(click, true)
         await get_tree().create_timer(1.4).timeout
+        assert(phase == "reasoning")
+        next_dialogue()
+        if stage < 2:
+            await get_tree().create_timer(3.2).timeout
+            assert(phase == "debate")
     assert(phase == "verdict")
     vote(culprit)
     assert(phase == "result")
     assert(score == 550)
     start_game()
-    round_number = 0
     show_debate()
     await get_tree().create_timer(5.2).timeout
     assert(not target_is_weak)
     await get_tree().create_timer(5.2).timeout
     assert(target_is_weak)
-    selected = 2
-    fire(statement.get_global_rect().get_center())
+    select_evidence(2)
+    fire(weak_label.get_global_rect().get_center())
     assert(confidence == 4)
     cooldown = 0
     fire(Vector2(20, 200))
-    assert(confidence == 3)
-    vote(culprit)
-    assert(phase == "debate")
+    assert(confidence == 4)
+    debate_remaining = 0
+    await get_tree().process_frame
+    await get_tree().process_frame
+    assert(phase == "result")
     show_menu()
-    print("SMOKE PASS: dialogue, intro, auto debate, correct evidence, wrong evidence, misses, verdict, score, restart")
+    await get_tree().process_frame
+    await get_tree().process_frame
+    print("SMOKE PASS: cylinder, loaded evidence, court record pause, weak-point hits, reasoning, automatic loops, verdict, wrong evidence, misses, timeout, restart")
     get_tree().quit()

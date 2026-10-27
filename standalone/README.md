@@ -1,4 +1,4 @@
-# Neon Verdict — standalone trial demo
+# Neon Verdict — standalone trial demo v0.2
 
 An original single-player 3D courtroom game for macOS and Windows. This project runs independently of Roblox. All models and audio are original and generated locally; the game needs no account or internet connection.
 
@@ -12,8 +12,10 @@ An original single-player 3D courtroom game for macOS and Windows. This project 
 
 - Click Begin Trial to start.
 - Dialogue: Next, Space, or Enter.
-- Debate: select a truth bullet with 1 / 2 / 3 or click its button. Read its description, then click the moving gold statement it contradicts. White statements are neutral. Testimony advances automatically; there is no dialogue box or Next button in a debate.
-- Five mistakes lose the case. Break three contradictions, then choose the culprit.
+- Debate: load a truth bullet with Q / E, the mouse wheel, 1 / 2 / 3, or by clicking a chamber in the revolver cylinder. Aim at the underlined gold phrase and click to fire. White words are neutral. Testimony loops automatically until you break the contradiction; there is no dialogue panel or Next button during debates.
+- Hold Shift to slow testimony using a regenerating focus gauge. Tab opens the Court Record and pauses the debate timer while you inspect evidence.
+- Each debate has a two-minute timer. Successful contradictions lead to a short reasoning scene before the next debate. Shots recoil the cylinder and show a tracer. Wrong arguments cost confidence; misses only affect accuracy.
+- Five false arguments or running out of time loses the case. Break three contradictions, then choose the culprit.
 - Escape: main menu. M: mute. F11: toggle fullscreen.
 
 This first case is about a stolen archive seal. The guilty contestant and character appearance palettes are randomized when the game launches. Retrying keeps the current case so you can learn it; relaunching rolls a new cast. A full story, investigation movement, save slots, voice acting, online multiplayer, and custom character art are not included yet.
@@ -22,7 +24,7 @@ This first case is about a stolen archive seal. The guilty contestant and charac
 
 If checking out source from GitHub, run `python3 generate_audio.py` first to create the two audio files. The downloadable source ZIP already contains them. Import project.godot in Godot 4.7.2. Main scene: main.tscn. All scene and gameplay code is in main.gd. Export presets target a universal Mac app and Windows x86-64. Install matching export templates through Godot before exporting. On Mac, open Project → Export to build either platform. Windows builds are cross-exported and still need testing on an actual Windows PC.
 
-`Godot --headless --path . -- --smoke-test` runs checks for dialogue, debate intro, automatic testimony changes, correct/incorrect evidence, misses, verdict, scoring, and restart.
+`Godot --headless --path . -- --smoke-test` runs checks for revolver selection, real keyboard/mouse event routing, Court Record pause, highlighted weak points, automatic testimony loops, reasoning scenes, correct/incorrect evidence, misses, timeout, verdict, scoring, and restart.
 
 ## Credits
 
