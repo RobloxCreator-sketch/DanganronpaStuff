@@ -3,16 +3,20 @@ local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
-local GuiService = game:GetService("GuiService")
 local Debris = game:GetService("Debris")
 local player = Players.LocalPlayer
 local lines = require(game:GetService("ReplicatedStorage"):WaitForChild("TrialDialogue"))
 local room = workspace:WaitForChild("TrialCourtroom")
 local slots = room:WaitForChild("Slots")
 local camera = workspace.CurrentCamera
+local playerGui = player:WaitForChild("PlayerGui")
+for _, old in ipairs(playerGui:GetChildren()) do
+    if old.Name == "TrialPresentation" then old:Destroy() end
+end
 local gui = Instance.new("ScreenGui")
+gui.IgnoreGuiInset = true
 gui.Name, gui.ResetOnSpawn, gui.DisplayOrder = "TrialPresentation", false, 20
-gui.Parent = player:WaitForChild("PlayerGui")
+gui.Parent = playerGui
 local pink = Color3.fromRGB(255, 55, 150)
 local function ui(class, properties, parent)
     local item = Instance.new(class)
@@ -45,6 +49,8 @@ local intro = ui("Frame", {Size = UDim2.fromScale(1, 1), BackgroundColor3 = Colo
 local introTitle = label({Text = "NONSTOP DEBATE", Position = UDim2.fromScale(-1, 0.35), Size = UDim2.fromScale(0.9, 0.16), TextColor3 = pink, ZIndex = 11}, intro)
 introTitle:FindFirstChildOfClass("UITextSizeConstraint").MaxTextSize = 68
 label({Text = "Aim at the moving statements. Click or tap to fire.", Position = UDim2.fromScale(0.1, 0.55), Size = UDim2.fromScale(0.8, 0.07), ZIndex = 11}, intro)
+label({Text = "TRIAL v3", Position = UDim2.fromScale(0.82, 0.04), Size = UDim2.fromScale(0.14, 0.04), TextColor3 = pink})
+local crosshair = label({Text = "+", AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(32, 32), Visible = false, ZIndex = 9, TextColor3 = Color3.fromRGB(255, 215, 80)})
 local index, generation, typing, orbit = 0, 0, false, false
 local transitioning, shot = false, false
 local fireAt
@@ -86,6 +92,8 @@ local function advance()
     fireAt = nil
     feedback.Visible = false
     panel.Visible = not orbit
+    nextButton.Active = not orbit
+    crosshair.Visible = orbit
     debateHint.Visible = orbit
     if orbit and not wasDebate then
         transitioning = true
@@ -115,10 +123,10 @@ local function advance()
     dialogue.Text, dialogue.MaxVisibleGraphemes, typing = line.text, 0, not orbit
     hint.Text = index == #lines and "SPACE / TAP TO REPLAY" or "SPACE / TAP NEXT"
     if orbit then
-        local words = label({ZIndex = 2, Text = line.text, TextColor3 = pink, TextStrokeTransparency = 0.25, Rotation = -7, Position = UDim2.fromScale(1, 0.30), Size = UDim2.fromScale(0.85, 0.2)}, debateLayer)
+        local words = label({ZIndex = 2, Text = line.text, TextColor3 = pink, TextStrokeTransparency = 0.25, Rotation = -7, Position = UDim2.fromScale(0.15, 0.30), Size = UDim2.fromScale(0.85, 0.2)}, debateLayer)
         local constraint = words:FindFirstChildOfClass("UITextSizeConstraint")
         constraint.MaxTextSize = 52
-        flyingTween = TweenService:Create(words, TweenInfo.new(7, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1), {Position = UDim2.fromScale(-0.9, 0.46)})
+        flyingTween = TweenService:Create(words, TweenInfo.new(8, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1), {Position = UDim2.fromScale(-0.9, 0.46)})
         flyingTween:Play()
         -- Check the moving target on pointer-down, not after a moving button is released.
         fireAt = function(point)
@@ -153,6 +161,10 @@ local function advance()
                 if token == generation then advance() end
             end)
         end
+        -- Testimony advances by itself. Clicking is exclusively for firing in debate mode.
+        task.delay(6, function()
+            if token == generation and orbit and not shot then advance() end
+        end)
         return
     end
     task.spawn(function()
@@ -165,7 +177,9 @@ local function advance()
         if token == generation then typing = false end
     end)
 end
-nextButton.Activated:Connect(advance)
+nextButton.Activated:Connect(function()
+    if not orbit and not transitioning then advance() end
+end)
 UserInputService.InputBegan:Connect(function(input, processed)
     if transitioning then return end
     if orbit then
@@ -173,8 +187,6 @@ UserInputService.InputBegan:Connect(function(input, processed)
         if UserInputService:GetFocusedTextBox() then return end
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             local point = Vector2.new(input.Position.X, input.Position.Y)
-            local inset = GuiService:GetGuiInset()
-            if not gui.IgnoreGuiInset then point = point - inset end
             if point.Y >= 0 and fireAt then fireAt(point) end
         end
         return
@@ -183,6 +195,10 @@ UserInputService.InputBegan:Connect(function(input, processed)
 end)
 RunService.RenderStepped:Connect(function(dt)
     if orbit then
+        panel.Visible = false
+        nextButton.Active = false
+        local pointer = UserInputService:GetMouseLocation()
+        crosshair.Position = UDim2.fromOffset(pointer.X, pointer.Y)
         orbitTime = orbitTime + dt * 0.22
         local center = room.Floor.Position + Vector3.new(0, 4, 0)
         local position = center + Vector3.new(math.sin(orbitTime) * 18, 5, math.cos(orbitTime) * 18)
