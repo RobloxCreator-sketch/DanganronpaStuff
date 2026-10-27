@@ -3,6 +3,8 @@ local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
+local GuiService = game:GetService("GuiService")
+local Debris = game:GetService("Debris")
 local player = Players.LocalPlayer
 local lines = require(game:GetService("ReplicatedStorage"):WaitForChild("TrialDialogue"))
 local room = workspace:WaitForChild("TrialCourtroom")
@@ -45,6 +47,7 @@ introTitle:FindFirstChildOfClass("UITextSizeConstraint").MaxTextSize = 68
 label({Text = "Aim at the moving statements. Click or tap to fire.", Position = UDim2.fromScale(0.1, 0.55), Size = UDim2.fromScale(0.8, 0.07), ZIndex = 11}, intro)
 local index, generation, typing, orbit = 0, 0, false, false
 local transitioning, shot = false, false
+local fireAt
 local activeTween, flyingTween
 local orbitTime = 0
 local function portrait(slot)
@@ -80,6 +83,7 @@ local function advance()
     debateLayer:ClearAllChildren()
     orbit = line.debate == true
     shot = false
+    fireAt = nil
     feedback.Visible = false
     panel.Visible = not orbit
     debateHint.Visible = orbit
@@ -111,29 +115,44 @@ local function advance()
     dialogue.Text, dialogue.MaxVisibleGraphemes, typing = line.text, 0, not orbit
     hint.Text = index == #lines and "SPACE / TAP TO REPLAY" or "SPACE / TAP NEXT"
     if orbit then
-        local miss = ui("TextButton", {Text = "", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), ZIndex = 1}, debateLayer)
-        miss.Activated:Connect(function()
-            if shot or transitioning or token ~= generation then return end
-            feedback.Text, feedback.Visible = "MISS — AIM AT THE WORDS", true
-        end)
         local words = label({ZIndex = 2, Text = line.text, TextColor3 = pink, TextStrokeTransparency = 0.25, Rotation = -7, Position = UDim2.fromScale(1, 0.30), Size = UDim2.fromScale(0.85, 0.2)}, debateLayer)
         local constraint = words:FindFirstChildOfClass("UITextSizeConstraint")
         constraint.MaxTextSize = 52
         flyingTween = TweenService:Create(words, TweenInfo.new(7, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1), {Position = UDim2.fromScale(-0.9, 0.46)})
         flyingTween:Play()
-        local target = ui("TextButton", {Text = "", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), ZIndex = 3, Selectable = true}, words)
-        target.Activated:Connect(function()
+        -- Check the moving target on pointer-down, not after a moving button is released.
+        fireAt = function(point)
             if shot or transitioning or token ~= generation then return end
+            local center = words.AbsolutePosition + words.AbsoluteSize / 2
+            local offset = point - center
+            local angle = math.rad(-words.Rotation)
+            local x = offset.X * math.cos(angle) - offset.Y * math.sin(angle)
+            local y = offset.X * math.sin(angle) + offset.Y * math.cos(angle)
+            local layerPoint = point - debateLayer.AbsolutePosition
+            local insideLayer = layerPoint.X >= 0 and layerPoint.Y >= 0 and layerPoint.X <= debateLayer.AbsoluteSize.X and layerPoint.Y <= debateLayer.AbsoluteSize.Y
+            local hit = insideLayer and math.abs(x) <= words.AbsoluteSize.X / 2 and math.abs(y) <= words.AbsoluteSize.Y / 2
+            -- A visible tracer appears on every shot, including misses.
+            local start = Vector2.new(camera.ViewportSize.X * 0.5, camera.ViewportSize.Y * 0.9)
+            local delta = point - start
+            local tracer = ui("Frame", {AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.fromOffset(start.X, start.Y), Size = UDim2.fromOffset(delta.Magnitude, 5), Rotation = math.deg(math.atan2(delta.Y, delta.X)), BackgroundColor3 = Color3.fromRGB(255, 215, 80), BorderSizePixel = 0, ZIndex = 8})
+            -- Rotate around the center while keeping the line endpoints aligned.
+            tracer.AnchorPoint = Vector2.new(0.5, 0.5)
+            tracer.Position = UDim2.fromOffset((start.X + point.X) / 2, (start.Y + point.Y) / 2)
+            TweenService:Create(tracer, TweenInfo.new(0.18), {BackgroundTransparency = 1}):Play()
+            Debris:AddItem(tracer, 0.2)
+            if not hit then
+                feedback.Text, feedback.Visible = "MISS — AIM AT THE WORDS", true
+                return
+            end
             shot = true
             flyingTween:Cancel()
-            target.Active = false
             words.TextColor3 = Color3.new(1, 1, 1)
             feedback.Text, feedback.Visible = "BREAK!", true
             TweenService:Create(words, TweenInfo.new(0.35), {TextTransparency = 1, TextStrokeTransparency = 1, Rotation = 12}):Play()
             task.delay(0.5, function()
                 if token == generation then advance() end
             end)
-        end)
+        end
         return
     end
     task.spawn(function()
@@ -148,7 +167,18 @@ local function advance()
 end
 nextButton.Activated:Connect(advance)
 UserInputService.InputBegan:Connect(function(input, processed)
-    if orbit or transitioning then return end
+    if transitioning then return end
+    if orbit then
+        -- Our debate overlay owns gameplay clicks, even when Roblox flags GUI input processed.
+        if UserInputService:GetFocusedTextBox() then return end
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            local point = Vector2.new(input.Position.X, input.Position.Y)
+            local inset = GuiService:GetGuiInset()
+            if not gui.IgnoreGuiInset then point = point - inset end
+            if point.Y >= 0 and fireAt then fireAt(point) end
+        end
+        return
+    end
     if not processed and (input.KeyCode == Enum.KeyCode.Space or input.KeyCode == Enum.KeyCode.Return or input.KeyCode == Enum.KeyCode.ButtonA) then advance() end
 end)
 RunService.RenderStepped:Connect(function(dt)
