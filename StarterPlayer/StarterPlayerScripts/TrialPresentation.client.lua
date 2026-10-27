@@ -37,7 +37,14 @@ local dialogue = label({Position = UDim2.fromScale(0.26, 0.28), Size = UDim2.fro
 local hint = label({Text = "SPACE / TAP NEXT", Position = UDim2.fromScale(0.58, 0.78), Size = UDim2.fromScale(0.38, 0.12), TextXAlignment = Enum.TextXAlignment.Right, TextColor3 = Color3.fromRGB(180,180,195)}, panel)
 local nextButton = ui("TextButton", {Text = "", BackgroundTransparency = 1, Position = UDim2.fromScale(0.25, 0), Size = UDim2.fromScale(0.75, 1)}, panel)
 local debateLayer = ui("Frame", {Size = UDim2.fromScale(1, 0.65), Position = UDim2.fromScale(0, 0.1), BackgroundTransparency = 1, ClipsDescendants = true})
+local debateHint = label({Text = "CLICK / TAP A STATEMENT TO SHOOT", Position = UDim2.fromScale(0.1, 0.87), Size = UDim2.fromScale(0.8, 0.06), TextColor3 = pink, Visible = false})
+local feedback = label({Text = "", Position = UDim2.fromScale(0.2, 0.68), Size = UDim2.fromScale(0.6, 0.1), TextColor3 = pink, Visible = false, ZIndex = 5})
+local intro = ui("Frame", {Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.fromRGB(12, 10, 22), BackgroundTransparency = 0.12, Visible = false, ZIndex = 10, Active = true})
+local introTitle = label({Text = "NONSTOP DEBATE", Position = UDim2.fromScale(-1, 0.35), Size = UDim2.fromScale(0.9, 0.16), TextColor3 = pink, ZIndex = 11}, intro)
+introTitle:FindFirstChildOfClass("UITextSizeConstraint").MaxTextSize = 68
+label({Text = "Aim at the moving statements. Click or tap to fire.", Position = UDim2.fromScale(0.1, 0.55), Size = UDim2.fromScale(0.8, 0.07), ZIndex = 11}, intro)
 local index, generation, typing, orbit = 0, 0, false, false
+local transitioning, shot = false, false
 local activeTween, flyingTween
 local orbitTime = 0
 local function portrait(slot)
@@ -60,7 +67,9 @@ local function portrait(slot)
     end
 end
 local function advance()
+    if transitioning then return end
     if typing then dialogue.MaxVisibleGraphemes = -1; typing = false; return end
+    local wasDebate = orbit
     index = index % #lines + 1
     generation = generation + 1
     local token = generation
@@ -70,6 +79,22 @@ local function advance()
     if flyingTween then flyingTween:Cancel() end
     debateLayer:ClearAllChildren()
     orbit = line.debate == true
+    shot = false
+    feedback.Visible = false
+    panel.Visible = not orbit
+    debateHint.Visible = orbit
+    if orbit and not wasDebate then
+        transitioning = true
+        debateHint.Visible = false
+        intro.Visible = true
+        introTitle.Position = UDim2.fromScale(-1, 0.35)
+        local entry = TweenService:Create(introTitle, TweenInfo.new(0.5, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {Position = UDim2.fromScale(0.05, 0.35)})
+        entry:Play()
+        task.wait(2.2)
+        intro.Visible = false
+        debateHint.Visible = true
+        transitioning = false
+    end
     camera.CameraType = Enum.CameraType.Scriptable
     camera.FieldOfView = orbit and 65 or 50
     if not orbit then
@@ -82,15 +107,34 @@ local function advance()
     end
     speaker.Text = slot.Name == "1" and player.DisplayName or slot:GetAttribute("SpeakerName")
     title.Text = orbit and "NONSTOP DEBATE  /  TESTIMONY" or "CLASS TRIAL  /  RECONSTRUCTION"
-    portrait(slot)
-    dialogue.Text, dialogue.MaxVisibleGraphemes, typing = line.text, 0, true
+    if not orbit then portrait(slot) end
+    dialogue.Text, dialogue.MaxVisibleGraphemes, typing = line.text, 0, not orbit
     hint.Text = index == #lines and "SPACE / TAP TO REPLAY" or "SPACE / TAP NEXT"
     if orbit then
-        local words = label({Text = line.text, TextColor3 = pink, TextStrokeTransparency = 0.25, Rotation = -7, Position = UDim2.fromScale(1, 0.30), Size = UDim2.fromScale(0.85, 0.2)}, debateLayer)
+        local miss = ui("TextButton", {Text = "", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), ZIndex = 1}, debateLayer)
+        miss.Activated:Connect(function()
+            if shot or transitioning or token ~= generation then return end
+            feedback.Text, feedback.Visible = "MISS — AIM AT THE WORDS", true
+        end)
+        local words = label({ZIndex = 2, Text = line.text, TextColor3 = pink, TextStrokeTransparency = 0.25, Rotation = -7, Position = UDim2.fromScale(1, 0.30), Size = UDim2.fromScale(0.85, 0.2)}, debateLayer)
         local constraint = words:FindFirstChildOfClass("UITextSizeConstraint")
         constraint.MaxTextSize = 52
         flyingTween = TweenService:Create(words, TweenInfo.new(7, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1), {Position = UDim2.fromScale(-0.9, 0.46)})
         flyingTween:Play()
+        local target = ui("TextButton", {Text = "", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), ZIndex = 3, Selectable = true}, words)
+        target.Activated:Connect(function()
+            if shot or transitioning or token ~= generation then return end
+            shot = true
+            flyingTween:Cancel()
+            target.Active = false
+            words.TextColor3 = Color3.new(1, 1, 1)
+            feedback.Text, feedback.Visible = "BREAK!", true
+            TweenService:Create(words, TweenInfo.new(0.35), {TextTransparency = 1, TextStrokeTransparency = 1, Rotation = 12}):Play()
+            task.delay(0.5, function()
+                if token == generation then advance() end
+            end)
+        end)
+        return
     end
     task.spawn(function()
         local count = utf8.len(line.text) or #line.text
@@ -104,6 +148,7 @@ local function advance()
 end
 nextButton.Activated:Connect(advance)
 UserInputService.InputBegan:Connect(function(input, processed)
+    if orbit or transitioning then return end
     if not processed and (input.KeyCode == Enum.KeyCode.Space or input.KeyCode == Enum.KeyCode.Return or input.KeyCode == Enum.KeyCode.ButtonA) then advance() end
 end)
 RunService.RenderStepped:Connect(function(dt)
