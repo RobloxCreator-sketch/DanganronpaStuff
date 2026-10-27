@@ -1,5 +1,8 @@
 extends Node3D
 # Original standalone trial game. All models are generated locally; no online assets.
+# Trial systems adapted from DREditor Alpha (CC BY 4.0); see THIRD_PARTY_NOTICES.md.
+const TrialCase = preload("res://trial_case.gd")
+const TrialCamera = preload("res://trial_camera.gd")
 const RevolverUI = preload("res://revolver_ui.gd")
 const PINK = Color("ff458f")
 const GOLD = Color("ffd17b")
@@ -26,6 +29,16 @@ var evidence_info: Label
 var evidence_buttons: Array[Button] = []
 var revolver: Control
 var loaded_name: Label
+var director = TrialCamera.new()
+var current_panel: Dictionary = {}
+var panel_duration = 5.0
+var correct_evidence = -1
+var noise: Label
+var noise_cleared = false
+var noise_time = 0.0
+var loading = 0.0
+var loaded_tween: Tween
+var noise_cooldown = 0.0
 var weak_label: Label
 var timer_label: Label
 var focus_label: Label
@@ -226,6 +239,9 @@ func clear_screen():
     evidence_buttons.clear()
     statement = null
     weak_label = null
+    noise = null
+    loading = 0
+    if loaded_tween and loaded_tween.is_valid(): loaded_tween.kill()
     evidence_sheet = null
     revolver = null
     focusing = false
@@ -249,6 +265,9 @@ func text(parent: Control, content: String, pos: Vector2, size: Vector2, font_si
     l.size = size
     l.add_theme_font_size_override("font_size", font_size)
     l.add_theme_color_override("font_color", color)
+    l.add_theme_color_override("font_shadow_color", Color(0, 0, 0, 0.8))
+    l.add_theme_constant_override("shadow_offset_x", 1)
+    l.add_theme_constant_override("shadow_offset_y", 2)
     l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
     l.mouse_filter = Control.MOUSE_FILTER_IGNORE
     parent.add_child(l)
@@ -287,7 +306,7 @@ func show_menu():
     text(screen, "Seven witnesses. Three contradictions. One stolen archive seal.\nRead the evidence, break the lies, and name the culprit.", Vector2(54, 440), Vector2(525, 95), 21)
     button(screen, "BEGIN TRIAL  →", Vector2(54, 565), Vector2(340, 60), start_game)
     button(screen, "QUIT", Vector2(413, 565), Vector2(155, 60), func(): get_tree().quit())
-    text(screen, "Standalone demo  •  Original procedural characters  •  v0.2", Vector2(54, 670), Vector2(750, 30), 15, Color("a39eb3"))
+    text(screen, "Standalone demo  •  Original procedural characters  •  v0.3", Vector2(54, 670), Vector2(750, 30), 15, Color("a39eb3"))
 
 func start_game():
     confidence = 5
@@ -408,8 +427,10 @@ func show_debate():
     tip.color = GOLD
     screen.add_child(tip)
     loaded_name = text(screen, "", Vector2(279, 600), Vector2(420, 40), 25, GOLD)
-    evidence_info = text(screen, "", Vector2(260, 649), Vector2(790, 65), 17, Color("e0d8dc"))
-    text(screen, "Q / E or WHEEL  •  load    SHIFT  •  focus    TAB  •  evidence", Vector2(260, 520), Vector2(940, 35), 16, Color("bbb3cb"))
+    rect(screen, Vector2(250, 642), Vector2(790, 70), Color(0.04, 0.04, 0.07, 0.8))
+    evidence_info = text(screen, "", Vector2(260, 649), Vector2(770, 65), 17, Color("e0d8dc"))
+    rect(screen, Vector2(250, 518), Vector2(960, 29), Color(0.04, 0.04, 0.07, 0.65))
+    text(screen, "Q / E or WHEEL  •  load    SHIFT  •  focus    TAB  •  evidence    RIGHT CLICK  •  silence noise", Vector2(260, 520), Vector2(1000, 35), 15, Color("bbb3cb"))
     timer_label = text(screen, "", Vector2(1080, 108), Vector2(185, 45), 28, PINK)
     focus_label = text(screen, "", Vector2(1000, 160), Vector2(250, 35), 18, GOLD)
     aim = text(screen, "+", Vector2.ZERO, Vector2(35, 35), 32, GOLD)
@@ -420,10 +441,20 @@ func show_debate():
     spawn_statement()
 
 func select_evidence(index: int):
+    if phase == "debate" and (loading > 0 or cooldown > 0): return
+    var changed = selected != index
     selected = index
     if phase != "debate": return
     if is_instance_valid(revolver): revolver.load_bullet(index)
     loaded_name.text = CLUES[index][0]
+    if changed:
+        loading = 0.22
+        loaded_name.position.x = 245
+        loaded_name.modulate.a = 0.15
+        if loaded_tween and loaded_tween.is_valid(): loaded_tween.kill()
+        loaded_tween = create_tween().set_parallel(true)
+        loaded_tween.tween_property(loaded_name, "position:x", 279.0, 0.22)
+        loaded_tween.tween_property(loaded_name, "modulate:a", 1.0, 0.22)
     evidence_info.text = clue_description(index)
     for i in range(evidence_buttons.size()):
         evidence_buttons[i].modulate = GOLD if i == selected else Color.WHITE
@@ -438,28 +469,39 @@ func spawn_statement():
         screen.remove_child(statement)
         statement.queue_free()
     if statement_tween and statement_tween.is_valid(): statement_tween.kill()
-    var lies = ["I NEVER ENTERED THE ARCHIVE.", "I NEVER TOUCHED THAT CABINET.", "A POWER CUT STOPPED THE CLOCK."]
-    var neutral = ["The reception began at eight.", "The seal was kept in a glass cabinet.", "We found the clock without a battery."]
-    target_is_weak = statement_index % 2 == 0
-    var saying: String = lies[round_number] if target_is_weak else neutral[round_number]
-    var who = culprit if target_is_weak else (culprit + 2) % 7
+    if is_instance_valid(noise):
+        screen.remove_child(noise)
+        noise.queue_free()
+    noise = null
+    noise_cleared = false
+    noise_time = 0
+    var panels: Array = TrialCase.DEBATES[round_number]
+    current_panel = panels[statement_index % panels.size()]
+    panel_duration = float(current_panel.duration)
+    target_is_weak = current_panel.has("weak")
+    correct_evidence = int(current_panel.get("answer", -1))
+    var saying: String = str(current_panel.get("text", ""))
+    var who = culprit
+    if current_panel.role == "witness": who = (culprit + 2) % 7
+    elif current_panel.role == "observer": who = (culprit + 4) % 7
     speaker_name.text = NAMES[who] + "  /  " + JOBS[who]
+    director.set_shot(camera, cast[who], current_panel.shot, panel_duration)
     statement = button(screen, "" if target_is_weak else saying, Vector2(300, 240), Vector2(820, 95), func(): pass)
     weak_label = null
     if target_is_weak:
-        var prefixes = ["I ", "I never touched ", "A "]
-        var weak_phrases = ["NEVER ENTERED THE ARCHIVE", "THAT CABINET", "POWER CUT"]
-        var suffixes = [".", ". Not once.", " stopped the clock."]
+        var prefix: String = str(current_panel.get("prefix", ""))
+        var weak_phrase: String = str(current_panel.weak)
+        var suffix: String = str(current_panel.get("suffix", ""))
         var font = ThemeDB.fallback_font
-        var prefix_width = font.get_string_size(prefixes[round_number], HORIZONTAL_ALIGNMENT_LEFT, -1, 30).x
-        var weak_width = font.get_string_size(weak_phrases[round_number], HORIZONTAL_ALIGNMENT_LEFT, -1, 30).x
-        var suffix_width = font.get_string_size(suffixes[round_number], HORIZONTAL_ALIGNMENT_LEFT, -1, 30).x
+        var prefix_width = font.get_string_size(prefix, HORIZONTAL_ALIGNMENT_LEFT, -1, 30).x
+        var weak_width = font.get_string_size(weak_phrase, HORIZONTAL_ALIGNMENT_LEFT, -1, 30).x
+        var suffix_width = font.get_string_size(suffix, HORIZONTAL_ALIGNMENT_LEFT, -1, 30).x
         var left = max(0, (820 - prefix_width - weak_width - suffix_width) / 2)
-        text(statement, prefixes[round_number], Vector2(left, 20), Vector2(prefix_width + 4, 50), 30)
-        weak_label = text(statement, weak_phrases[round_number], Vector2(left + prefix_width, 20), Vector2(weak_width + 5, 50), 30, GOLD)
+        text(statement, prefix, Vector2(left, 20), Vector2(prefix_width + 4, 50), 30)
+        weak_label = text(statement, weak_phrase, Vector2(left + prefix_width, 20), Vector2(weak_width + 5, 50), 30, GOLD)
         weak_label.autowrap_mode = TextServer.AUTOWRAP_OFF
         rect(weak_label, Vector2(0, 43), Vector2(weak_width, 2), GOLD)
-        text(statement, suffixes[round_number], Vector2(left + prefix_width + weak_width, 20), Vector2(suffix_width + 6, 50), 30)
+        text(statement, suffix, Vector2(left + prefix_width + weak_width, 20), Vector2(suffix_width + 6, 50), 30)
     statement.add_theme_font_size_override("font_size", 30)
     statement.add_theme_color_override("font_color", GOLD if target_is_weak else PALE)
     statement.add_theme_stylebox_override("normal", StyleBoxEmpty.new())
@@ -467,13 +509,43 @@ func spawn_statement():
     statement.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
     statement.mouse_filter = Control.MOUSE_FILTER_IGNORE
     statement_tween = create_tween()
-    statement_tween.tween_property(statement, "position", Vector2(160, 295), 5.0)
+    statement_tween.tween_property(statement, "position", Vector2(160, 295), panel_duration)
     statement_time = 0
     statement_index += 1
+    if current_panel.has("noise"):
+        noise = text(screen, str(current_panel.noise), Vector2(480, 265), Vector2(480, 70), 29, Color("bb91c9"))
+        noise.autowrap_mode = TextServer.AUTOWRAP_OFF
+        noise.add_theme_color_override("font_outline_color", Color("171329"))
+        noise.add_theme_constant_override("outline_size", 12)
+        noise.z_index = 4
+
+func clear_noise(point: Vector2):
+    if phase != "debate" or is_instance_valid(evidence_sheet) or noise_cooldown > 0: return
+    noise_cooldown = 0.25
+    if is_instance_valid(noise) and not noise_cleared and noise.get_global_rect().has_point(point):
+        noise_cleared = true
+        debate_remaining = min(120, debate_remaining + 5)
+        feedback.text = "NOISE CLEARED  +5 SEC"
+        feedback_time = 1.2
+        shatter(noise.get_global_rect().get_center(), Color("c299e3"))
+        noise.hide()
+    else:
+        debate_remaining = max(0, debate_remaining - 3)
+        feedback.text = "SILENCER MISSED  -3 SEC"
+        feedback_time = 1.1
+
+func shatter(point: Vector2, color: Color):
+    for i in range(14):
+        var shard = rect(overlay, point, Vector2(rng.randf_range(5, 17), rng.randf_range(3, 10)), color)
+        var tween = create_tween().set_parallel(true)
+        tween.tween_property(shard, "position", point + Vector2.from_angle(rng.randf() * TAU) * rng.randf_range(55, 230), 0.5)
+        tween.tween_property(shard, "rotation", rng.randf_range(-4, 4), 0.5)
+        tween.tween_property(shard, "modulate:a", 0.0, 0.5)
+        tween.chain().tween_callback(shard.queue_free)
 
 func fire(point: Vector2):
-    if phase != "debate" or cooldown > 0: return
-    cooldown = 0.28
+    if phase != "debate" or cooldown > 0 or loading > 0 or is_instance_valid(evidence_sheet): return
+    cooldown = 0.65
     shots += 1
     if not muted: shot_sound.play()
     if is_instance_valid(revolver): revolver.kick()
@@ -484,14 +556,46 @@ func fire(point: Vector2):
     var tween = create_tween()
     tween.tween_property(tracer, "modulate:a", 0.0, 0.2)
     tween.tween_callback(tracer.queue_free)
+    var bullet_text = text(overlay, CLUES[selected][0], start - Vector2(0, 20), Vector2(400, 50), 28, GOLD)
+    bullet_text.z_index = 9
+    bullet_text.scale = Vector2(1.1, 1.1)
+    bullet_text.rotation = clamp(delta.angle(), -0.5, 0.5)
+    var flight = create_tween().set_parallel(true)
+    flight.tween_property(bullet_text, "position", point - Vector2(75, 18), 0.22).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+    flight.tween_property(bullet_text, "scale", Vector2(0.45, 0.45), 0.22)
+    flight.tween_property(bullet_text, "modulate:a", 0.0, 0.29)
+    flight.chain().tween_callback(bullet_text.queue_free)
+    loaded_name.modulate.a = 0.25
+    var shot_token = sequence
+    var fired_evidence = selected
+    var answer_at_shot = correct_evidence
     var hit_statement = is_instance_valid(statement) and statement.get_global_rect().has_point(point)
     var hit = is_instance_valid(weak_label) and weak_label.get_global_rect().grow(7).has_point(point)
-    if hit and target_is_weak and selected == round_number:
+    var blocked = is_instance_valid(noise) and not noise_cleared and noise.get_global_rect().has_point(point)
+    # Sample the phrase at click time, then resolve when the animated bullet arrives.
+    await get_tree().create_timer(0.22).timeout
+    if shot_token != sequence or phase != "debate": return
+    loaded_name.modulate.a = 1.0
+    if blocked:
+        debate_remaining = max(0, debate_remaining - 15)
+        feedback.text = "BLOCKED — RIGHT-CLICK THE WHITE NOISE"
+        feedback_time = 1.5
+        return
+    if hit and answer_at_shot >= 0 and fired_evidence == answer_at_shot:
         hits += 1
         score += 100
         round_number += 1
         phase = "break"
+        shatter(point, GOLD)
         feedback.text = "BREAK!  +100"
+        var counter = text(overlay, "THAT DOESN'T ADD UP!", Vector2(-1100, 210), Vector2(1150, 110), 62, PINK)
+        counter.add_theme_color_override("font_outline_color", INK)
+        counter.add_theme_constant_override("outline_size", 18)
+        var counter_tween = create_tween()
+        counter_tween.tween_property(counter, "position:x", 200.0, 0.18).set_trans(Tween.TRANS_QUINT).set_ease(Tween.EASE_OUT)
+        counter_tween.tween_interval(0.7)
+        counter_tween.tween_property(counter, "modulate:a", 0.0, 0.2)
+        counter_tween.tween_callback(counter.queue_free)
         feedback_time = 1.2
         statement.hide()
         var token = sequence
@@ -573,8 +677,10 @@ func show_result(won: bool, explanation: String):
 func _process(dt: float):
     elapsed += dt
     cooldown = max(0, cooldown - dt)
+    loading = max(0, loading - dt)
+    noise_cooldown = max(0, noise_cooldown - dt)
     feedback_time = max(0, feedback_time - dt)
-    if phase in ["menu", "intro", "debate", "break", "verdict", "result"]:
+    if phase in ["menu", "intro", "verdict", "result"]:
         orbit_time += dt * (0.16 if phase in ["debate", "break"] else 0.06)
         var radius = 5.5 if phase in ["debate", "break"] else 6.5
         camera.position = Vector3(sin(orbit_time) * radius, 3.1 if phase == "debate" else 4.2, cos(orbit_time) * radius)
@@ -590,13 +696,22 @@ func _process(dt: float):
             debate_remaining = max(0, debate_remaining - dt)
             focus_remaining = max(0, focus_remaining - dt) if focusing else min(6, focus_remaining + dt * 0.4)
         statement_time += dt * speed
-        if statement_time >= 5.0: spawn_statement()
+        director.step(dt * speed)
+        if is_instance_valid(noise) and not noise_cleared:
+            noise_time += dt * speed
+            noise.position = statement.position + Vector2(180 + sin(noise_time * 1.5) * 90, 23)
+        if statement_time >= panel_duration: spawn_statement()
         timer_label.text = "%02d:%02d" % [int(debate_remaining) / 60, int(debate_remaining) % 60]
         focus_label.text = ("FOCUS  " if focusing else "FOCUS READY  ") + str(int(focus_remaining * 100 / 6)) + "%"
         if debate_remaining <= 0:
             show_result(false, "Time ran out. Review the court record and find the gold weak point.")
             return
-        if is_instance_valid(aim): aim.position = get_viewport().get_mouse_position() - Vector2(12, 12)
+        if is_instance_valid(aim):
+            var pointer = get_viewport().get_mouse_position()
+            aim.position = pointer - Vector2(12, 12)
+            var over_weak = is_instance_valid(weak_label) and weak_label.get_global_rect().has_point(pointer)
+            aim.text = "⊕" if over_weak else "+"
+            aim.modulate = PINK if over_weak else GOLD
         if feedback_time <= 0 and is_instance_valid(feedback): feedback.text = ""
     for i in range(cast.size()):
         cast[i].rotation.z = sin(elapsed * 1.7 + i) * 0.012
@@ -624,10 +739,17 @@ func _unhandled_input(event: InputEvent):
     if phase == "debate" and not is_instance_valid(evidence_sheet):
         if event is InputEventMouseButton and event.pressed and event.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN]:
             select_evidence(posmod(selected + (-1 if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1), 3))
+        if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT:
+            clear_noise(event.position)
         if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
             if not Rect2(-22, 425, 300, 295).has_point(event.position): fire(event.position)
         elif event is InputEventScreenTouch and event.pressed:
             if not Rect2(-22, 425, 300, 295).has_point(event.position): fire(event.position)
+
+func seek_weak_test():
+    for i in range(4):
+        if target_is_weak: return
+        spawn_statement()
 
 func run_smoke_test():
     start_game()
@@ -636,15 +758,18 @@ func run_smoke_test():
     next_dialogue()
     await get_tree().create_timer(3.2).timeout
     assert(phase == "debate")
+    assert(not target_is_weak)
     assert(is_instance_valid(revolver))
     assert(screen.find_children("*", "SubViewportContainer", false, false).is_empty())
     select_evidence(2)
+    await get_tree().create_timer(0.25).timeout
     assert(revolver.selected == 2)
     var key = InputEventKey.new()
     key.pressed = true
     key.keycode = KEY_E
     get_viewport().push_input(key, true)
     assert(selected == 0)
+    await get_tree().create_timer(0.25).timeout
     key = InputEventKey.new()
     key.pressed = true
     key.keycode = KEY_TAB
@@ -655,17 +780,30 @@ func run_smoke_test():
     assert(is_equal_approx(saved_time, debate_remaining))
     toggle_evidence()
     for stage in range(3):
+        seek_weak_test()
+        assert(round_number == stage and target_is_weak)
+        await get_tree().create_timer(0.3).timeout
+        if stage == 0:
+            var before_block = debate_remaining
+            fire(noise.get_global_rect().get_center())
+            await get_tree().create_timer(0.3).timeout
+            assert(round_number == 0 and debate_remaining < before_block - 14)
+            cooldown = 0
+        var silence = InputEventMouseButton.new()
+        silence.pressed = true
+        silence.button_index = MOUSE_BUTTON_RIGHT
+        silence.position = noise.get_global_rect().get_center()
+        get_viewport().push_input(silence, true)
+        assert(noise_cleared)
         select_evidence(stage)
-        assert(round_number == stage)
-        assert(target_is_weak)
-        # Exercise real viewport input dispatch, including GUI and unhandled input.
+        await get_tree().create_timer(0.3).timeout
         var click = InputEventMouseButton.new()
         click.button_index = MOUSE_BUTTON_LEFT
         click.pressed = true
         click.position = weak_label.get_global_rect().get_center()
         click.global_position = click.position
         get_viewport().push_input(click, true)
-        await get_tree().create_timer(1.4).timeout
+        await get_tree().create_timer(1.6).timeout
         assert(phase == "reasoning")
         next_dialogue()
         if stage < 2:
@@ -673,19 +811,21 @@ func run_smoke_test():
             assert(phase == "debate")
     assert(phase == "verdict")
     vote(culprit)
-    assert(phase == "result")
-    assert(score == 550)
+    assert(phase == "result" and score == 550)
     start_game()
     show_debate()
-    await get_tree().create_timer(5.2).timeout
-    assert(not target_is_weak)
-    await get_tree().create_timer(5.2).timeout
+    await get_tree().create_timer(4.7).timeout
     assert(target_is_weak)
+    noise_cleared = true
+    noise.hide()
     select_evidence(2)
+    await get_tree().create_timer(0.25).timeout
     fire(weak_label.get_global_rect().get_center())
+    await get_tree().create_timer(0.3).timeout
     assert(confidence == 4)
     cooldown = 0
     fire(Vector2(20, 200))
+    await get_tree().create_timer(0.3).timeout
     assert(confidence == 4)
     debate_remaining = 0
     await get_tree().process_frame
@@ -693,6 +833,5 @@ func run_smoke_test():
     assert(phase == "result")
     show_menu()
     await get_tree().process_frame
-    await get_tree().process_frame
-    print("SMOKE PASS: cylinder, loaded evidence, court record pause, weak-point hits, reasoning, automatic loops, verdict, wrong evidence, misses, timeout, restart")
+    print("SMOKE PASS: data panels, speaker cameras, loading lock, keyboard/mouse, noise blocking/silencing, animated shots, weak points, reasoning, verdict, mistakes, timeout, restart")
     get_tree().quit()
